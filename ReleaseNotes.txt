@@ -1,3 +1,6 @@
+0.3.0.2
+Bugfix Get-AzureADUser didn't always retrieve the user needed
+
 0.3.0.1
 Added function Get-NavCompanyInNavContainer
 Always enable API Services in container
