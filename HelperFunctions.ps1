@@ -50,6 +50,7 @@ function DockerDo {
         [switch]$accept_eula,
         [switch]$accept_outdated,
         [switch]$detach,
+        [switch]$silent,
         [string[]]$parameters = @()
     )
 
@@ -62,8 +63,9 @@ function DockerDo {
     if ($detach) {
         $parameters += "--detach"
     }
-    $arguments = ("$command "+[string]::Join(" ", $parameters)+" $imageName")
 
+    $result = $true
+    $arguments = ("$command "+[string]::Join(" ", $parameters)+" $imageName")
     $pinfo = New-Object System.Diagnostics.ProcessStartInfo
     $pinfo.FileName = "docker.exe"
     $pinfo.RedirectStandardError = $true
@@ -73,23 +75,71 @@ function DockerDo {
     $p = New-Object System.Diagnostics.Process
     $p.StartInfo = $pinfo
     $p.Start() | Out-Null
-    $p.WaitForExit()
-    $output = $p.StandardOutput.ReadToEnd()
-    $error = $p.StandardError.ReadToEnd()
-    if ($p.ExitCode -eq 0) {
-        return $true
-    } else {
-        if ("$output".Trim() -ne "") {
-            Log $output
+
+
+    $outtask = $null
+    $errtask = $p.StandardError.ReadToEndAsync()
+    $out = ""
+    $err = ""
+    
+    do {
+        if ($outtask -eq $null) {
+            $outtask = $p.StandardOutput.ReadLineAsync()
         }
-        $errorMessage = ""
-        if ("$error".Trim() -ne "") {
-            $errorMessage += $error + "`r`n"
+        $outtask.Wait(100) | Out-Null
+        if ($outtask.IsCompleted) {
+            $outStr = $outtask.Result
+            if ($outStr -eq $null) {
+                break
+            }
+            if (!$silent) {
+                Write-Host $outStr
+            }
+            $out += $outStr
+            $outtask = $null
+            if ($outStr.StartsWith("Please login")) {
+                $registry = $imageName.Split("/")[0]
+                if ($registry -eq "bcinsider.azurecr.io") {
+                    throw "You need to login to $registry prior to pulling images. Get credentials through the ReadyToGo program on Microsoft Collaborate."
+                } else {
+                    throw "You need to login to $registry prior to pulling images."
+                }
+            }
+        } elseif ($outtask.IsCanceled) {
+            break
+        } elseif ($outtask.IsFaulted) {
+            break
         }
-        $errorMessage += "Commandline: docker $arguments"
-        Write-Error -Message $errorMessage
-        return $false
+    } while(!($p.HasExited))
+    
+    $err = $errtask.Result
+    $p.WaitForExit();
+
+    if ($p.ExitCode -ne 0) {
+        $result = $false
+        if (!$silent) {
+            $out = $out.Trim()
+            $err = $err.Trim()
+            if ($command -eq "run" -and "$out" -ne "") {
+                Docker rm $out -f
+            }
+            $errorMessage = ""
+            if ("$err" -ne "") {
+                $errorMessage += "$err`r`n"
+                if ($err.Contains("authentication required")) {
+                    $registry = $imageName.Split("/")[0]
+                    if ($registry -eq "bcinsider.azurecr.io") {
+                        $errorMessage += "You need to login to $registry prior to pulling images. Get credentials through the ReadyToGo program on Microsoft Collaborate.`r`n"
+                    } else {
+                        $errorMessage += "You need to login to $registry prior to pulling images.`r`n"
+                    }
+                }
+            }
+            $errorMessage += "ExitCode: "+$p.ExitCode + "`r`nCommandline: docker $arguments"
+            Write-Error -Message $errorMessage
+        }
     }
+    $result
 }
 
 function Get-NavContainerAuth {

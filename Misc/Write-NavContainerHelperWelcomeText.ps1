@@ -37,6 +37,8 @@
     Write-Host "Copy-FileToNavContainer          Copy file to Nav Container"
     Write-Host "Export-NavContainerDatabasesAsBacpac Export database(s) in Nav Container as BacPac"
     Write-Host "Backup-NavContainerDatabases     Backup database(s) in Nav Container as bak"
+    Write-Host "Extract-FilesFromNavContainerImage Extract files from Nav Container Image"
+    Write-Host "Get-BestNavContainerImageName    Get best specific Nav Container Image for your host OS"
     Write-Host
     Write-Host -ForegroundColor Yellow "Object handling functions"
     Write-Host "Import-ObjectsToNavContainer     Import objects from .txt or .fob file to Nav Container"
@@ -61,6 +63,7 @@
     Write-Host "Get-NavContainerAppInfo          Get info about installed apps from Nav Container"
     Write-Host "Start-NavContainerAppDataUpgrade Start Data Upgrade for an App in a Nav Container"
     Write-Host "Install-NAVSipCryptoProviderFromNavContainer Install Nav Sip Crypto Provider locally from container to sign extensions"
+    Write-Host "Sign-NavContainerApp             Uses a Nav container to sign an App"
     Write-Host
     Write-Host -ForegroundColor Yellow "Tenant handling functions"
     Write-Host "Get-NavContainerTenants          Get all tenants in Nav Container"

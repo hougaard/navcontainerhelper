@@ -1,7 +1,9 @@
-﻿Set-StrictMode -Version 2.0
+﻿#Requires -PSEdition Desktop 
+
+Set-StrictMode -Version 2.0
 
 $verbosePreference = "SilentlyContinue"
-$warningPreference = "SilentlyContinue"
+$warningPreference = 'Continue'
 $errorActionPreference = 'Stop'
 
 $hostHelperFolder = "C:\ProgramData\NavContainerHelper"
@@ -12,12 +14,26 @@ New-Item -Path $extensionsFolder -ItemType Container -Force -ErrorAction Ignore
 
 $containerHelperFolder = "C:\ProgramData\NavContainerHelper"
 
+$dockerOk = $true
+try {
+    $ps = (docker ps)
+    if ($LASTEXITCODE -ne 0) {
+        $dockerOk = $false
+    }
+} catch{
+    $dockerOk = $false
+}
+if (!$dockerOk) {
+    Write-Warning "NavContainerHelper might not work. Current user might not have permissions or docker engine might not be running."
+}
+
 $sessions = @{}
 
 . (Join-Path $PSScriptRoot "HelperFunctions.ps1")
 
 # Container Info functions
 . (Join-Path $PSScriptRoot "ContainerInfo\Get-NavContainerNavVersion.ps1")
+. (Join-Path $PSScriptRoot "ContainerInfo\Get-NavContainerPlatformVersion.ps1")
 . (Join-Path $PSScriptRoot "ContainerInfo\Get-NavContainerImageName.ps1")
 . (Join-Path $PSScriptRoot "ContainerInfo\Get-NavContainerGenericTag.ps1")
 . (Join-Path $PSScriptRoot "ContainerInfo\Get-NavContainerOsVersion.ps1")
@@ -40,7 +56,6 @@ $sessions = @{}
 . (Join-Path $PSScriptRoot "ContainerHandling\Remove-NavContainerSession.ps1")
 . (Join-Path $PSScriptRoot "ContainerHandling\Enter-NavContainer.ps1")
 . (Join-Path $PSScriptRoot "ContainerHandling\Open-NavContainer.ps1")
-. (Join-Path $PSScriptRoot "ContainerHandling\New-CSideDevContainer.ps1")
 . (Join-Path $PSScriptRoot "ContainerHandling\New-NavContainer.ps1")
 . (Join-Path $PSScriptRoot "ContainerHandling\Restart-NavContainer.ps1")
 . (Join-Path $PSScriptRoot "ContainerHandling\Stop-NavContainer.ps1")
@@ -48,6 +63,8 @@ $sessions = @{}
 . (Join-Path $PSScriptRoot "ContainerHandling\Import-NavContainerLicense.ps1")
 . (Join-Path $PSScriptRoot "ContainerHandling\Remove-NavContainer.ps1")
 . (Join-Path $PSScriptRoot "ContainerHandling\Wait-NavContainerReady.ps1")
+. (Join-Path $PSScriptRoot "ContainerHandling\Extract-FilesFromNavContainerImage.ps1")
+. (Join-Path $PSScriptRoot "ContainerHandling\Get-BestNavContainerImageName.ps1")
 
 # Object Handling functions
 . (Join-Path $PSScriptRoot "ObjectHandling\Export-NavContainerObjects.ps1")
@@ -71,7 +88,11 @@ $sessions = @{}
 . (Join-Path $PSScriptRoot "AppHandling\UnPublish-NavContainerApp.ps1")
 . (Join-Path $PSScriptRoot "AppHandling\Get-NavContainerAppInfo.ps1")
 . (Join-Path $PSScriptRoot "AppHandling\Compile-AppInNavContainer.ps1")
+. (Join-Path $PSScriptRoot "AppHandling\Convert-ALCOutputToAzureDevOps.ps1")
+. (Join-Path $PSScriptRoot "AppHandling\Convert-CALTestOutputToAzureDevOps.ps1")
+. (Join-Path $PSScriptRoot "AppHandling\Convert-CALExecutionTimeToTimeSpan.ps1")
 . (Join-Path $PSScriptRoot "AppHandling\Install-NAVSipCryptoProviderFromNavContainer.ps1")
+. (Join-Path $PSScriptRoot "AppHandling\Sign-NavContainerApp.ps1")
 
 # Tenant Handling functions
 . (Join-Path $PSScriptRoot "TenantHandling\New-NavContainerTenant.ps1")
@@ -106,6 +127,8 @@ $sessions = @{}
 . (Join-Path $PSScriptRoot "Misc\Get-NavVersionFromVersionInfo.ps1")
 . (Join-Path $PSScriptRoot "Misc\Copy-FileFromNavContainer.ps1")
 . (Join-Path $PSScriptRoot "Misc\Copy-FileToNavContainer.ps1")
+. (Join-Path $PSScriptRoot "Misc\Add-FontsToNavContainer.ps1")
+. (Join-Path $PSScriptRoot "Misc\Import-PfxCertificateToNavContainer.ps1")
 
 # Company Handling functions
 . (Join-Path $PSScriptRoot "CompanyHandling\Get-CompanyInNavContainer.ps1")
@@ -117,4 +140,4 @@ $sessions = @{}
 . (Join-Path $PSScriptRoot "ConfigPackageHandling\Remove-ConfigPackageInNavContainer.ps1")
 
 # Symbol Handling
-. (Join-Path $PSScriptRoot "SymbolHandling\Create-ApplicationSymbolsInNavContainer.ps1")
+. (Join-Path $PSScriptRoot "SymbolHandling\Generate-SymbolsInNavContainer.ps1")

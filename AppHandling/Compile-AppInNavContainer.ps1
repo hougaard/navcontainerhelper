@@ -15,7 +15,13 @@
  .Parameter appSymbolsFolder
   Folder in which the symbols of dependent apps will be placed. This folder (or any of its parents) needs to be shared with the container. Default is $appProjectFolder\symbols.
  .Parameter UpdateSymbols
-  Add this switch to indicate that you want to download symbols for all dependent apps.
+  Add this switch to indicate that you want to force the download of symbols for all dependent apps.
+ .Parameter AzureDevOps
+  Add this switch to convert the output to Azure DevOps Build Pipeline compatible output
+ .Parameter EnableCodeCop
+  Add this switch to Enable CodeCop to run
+ .Parameter Failon
+  Specify if you want Compilation to fail on Error or Warning (Works only if you specify -AzureDevOps)
  .Example
   Compile-AppInNavContainer -containerName test -credential $credential -appProjectFolder "C:\Users\freddyk\Documents\AL\Test"
  .Example
@@ -35,8 +41,12 @@ function Compile-AppInNavContainer {
         [Parameter(Mandatory=$false)]
         [string]$appOutputFolder = (Join-Path $appProjectFolder "output"),
         [Parameter(Mandatory=$false)]
-        [string]$appSymbolsFolder = (Join-Path $appProjectFolder "symbols"),
-        [switch]$UpdateSymbols
+        [string]$appSymbolsFolder = (Join-Path $appProjectFolder ".alpackages"),
+        [switch]$UpdateSymbols,
+        [switch]$AzureDevOps,
+        [switch]$EnableCodeCop,
+        [ValidateSet('none','error','warning')]
+        [string]$FailOn = 'none'
     )
 
     $startTime = [DateTime]::Now
@@ -62,9 +72,9 @@ function Compile-AppInNavContainer {
 
     $appJsonFile = Join-Path $appProjectFolder 'app.json'
     $appJsonObject = Get-Content -Raw -Path $appJsonFile | ConvertFrom-Json
-    $appName = $appJsonObject.Publisher + '_' + $appJsonObject.Name + '_' + $appJsonObject.Version + '.app'
+    $appName = "$($appJsonObject.Publisher)_$($appJsonObject.Name)_$($appJsonObject.Version).app"
 
-    Write-Host "Using Symbols Folder: " $appSymbolsFolder
+    Write-Host "Using Symbols Folder: $appSymbolsFolder"
     if (!(Test-Path -Path $appSymbolsFolder -PathType Container)) {
         New-Item -Path $appSymbolsFolder -ItemType Directory | Out-Null
     }
@@ -74,19 +84,42 @@ function Compile-AppInNavContainer {
         @{"publisher" = "Microsoft"; "name" = "System"; "version" = $appJsonObject.platform }
     )
 
-    if ($appJsonObject.test)
+    if (([bool]($appJsonObject.PSobject.Properties.name -match "test")) -and $appJsonObject.test)
     {
         $dependencies +=  @{"publisher" = "Microsoft"; "name" = "Test"; "version" = $appJsonObject.test }
     }
     
-    $appJsonObject.dependencies | ForEach-Object {
-        $dependencies += @{ "publisher" = $_.publisher; "name" = $_.name; "version" = $_.version }
+    if (([bool]($appJsonObject.PSobject.Properties.name -match "dependencies")) -and $appJsonObject.dependencies)
+    {
+        $appJsonObject.dependencies | ForEach-Object {
+            $dependencies += @{ "publisher" = $_.publisher; "name" = $_.name; "version" = $_.version }
+        }
     }
-    
+
+    $session = Get-NavContainerSession -containerName $containerName -silent
+    if (!$updateSymbols) {
+        $existingApps = Invoke-Command -Session $session -ScriptBlock { Param($appSymbolsFolder)
+            Get-ChildItem -Path (Join-Path $appSymbolsFolder '*.app') | ForEach-Object { Get-NavAppInfo -Path $_.FullName }
+        } -ArgumentList $containerSymbolsFolder
+    }
+    $publishedApps = Invoke-Command -Session $session -ScriptBlock { Param($tenant)
+        Get-NavAppInfo -ServerInstance NAV -tenant $tenant
+        Get-NavAppInfo -ServerInstance NAV -symbolsOnly
+    } -ArgumentList $tenant
+
     $dependencies | ForEach-Object {
-        $symbolsFile = Join-Path $appSymbolsFolder "$($_.name).app"
-        if ($updateSymbols -or !(Test-Path -Path $symbolsFile -PathType Leaf)) {
-            Write-Host "Downloading symbols: $($_.name).app"
+        $dependency = $_
+        if ($updateSymbols -or !($existingApps | Where-Object {($_.Name -eq $dependency.name) -and ($_.Publisher -eq $dependency.publisher)})) {
+            $publisher = $_.publisher
+            $name = $_.name
+            $version = $_.version
+            $app = $publishedApps | Where-Object { $_.publisher -eq $publisher -and $_.name -eq $name }
+            if ($app) {
+                $version = $app.version
+            }
+            $symbolsName = "${publisher}_${name}_${version}.app"
+            $symbolsFile = Join-Path $appSymbolsFolder $symbolsName
+            Write-Host "Downloading symbols: $symbolsName"
 
             $session = Get-NavContainerSession -containerName $containerName -silent
             [xml]$customConfig = Invoke-Command -Session $session -ScriptBlock { 
@@ -123,21 +156,20 @@ function Compile-AppInNavContainer {
                 $authParam += @{"usedefaultcredential" = $true}
             }
 
-            $url = "$devServerUrl/dev/packages?publisher=$($_.publisher)&appName=$($_.name)&versionText=$($_.Version)&tenant=$tenant"
+            $url = "$devServerUrl/dev/packages?publisher=${publisher}&appName=${name}&versionText=${version}&tenant=$tenant"
             Invoke-RestMethod -Method Get -Uri $url @AuthParam -OutFile $symbolsFile
         }
     }
 
-    $session = Get-NavContainerSession -containerName $containerName -silent
-    Invoke-Command -Session $session -ScriptBlock { Param($appProjectFolder, $appSymbolsFolder, $appOutputFile )
+    $result = Invoke-Command -Session $session -ScriptBlock { Param($appProjectFolder, $appSymbolsFolder, $appOutputFile, $EnableCodeCop )
 
         if (!(Test-Path "c:\build" -PathType Container)) {
-            Write-Host "Unpacking .vsix file"
             $tempZip = Join-Path $env:TEMP "alc.zip"
             Copy-item -Path (Get-Item -Path "c:\run\*.vsix").FullName -Destination $tempZip
             Expand-Archive -Path $tempZip -DestinationPath "c:\build\vsix"
         }
         $alcPath = 'C:\build\vsix\extension\bin'
+        $analyzerPath = 'C:\build\vsix\extension\bin\Analyzers\Microsoft.Dynamics.Nav.CodeCop.dll'
 
         if (Test-Path -Path $appOutputFile -PathType Leaf) {
             Remove-Item -Path $appOutputFile -Force
@@ -145,17 +177,28 @@ function Compile-AppInNavContainer {
 
         Write-Host "Compiling..."
         Set-Location -Path $alcPath
-        & .\alc.exe /project:$appProjectFolder /packagecachepath:$appSymbolsFolder /out:$appOutputFile | Out-Host
-
-        if (!(Test-Path -Path $appOutputFile)) {
-            throw "App generation failed"
+        if ($EnableCodeCop) {
+            & .\alc.exe /project:$appProjectFolder /packagecachepath:$appSymbolsFolder /out:$appOutputFile /analyzer:$analyzerPath
+        } else {
+            & .\alc.exe /project:$appProjectFolder /packagecachepath:$appSymbolsFolder /out:$appOutputFile
         }
 
-    } -ArgumentList $containerProjectFolder, $containerSymbolsFolder, (Join-Path $containerOutputFolder $appName)
+    } -ArgumentList $containerProjectFolder, $containerSymbolsFolder, (Join-Path $containerOutputFolder $appName), $EnableCodeCop
     
+    if ($AzureDevOps) {
+        $result | Convert-ALCOutputToAzureDevOps -FailOn $FailOn
+    } else {
+        $result | Write-Host
+    }
+
     $timespend = [Math]::Round([DateTime]::Now.Subtract($startTime).Totalseconds)
     $appFile = Join-Path $appOutputFolder $appName
-    Write-Host "$appFile successfully created in $timespend seconds"
+
+    if (Test-Path -Path $appFile) {
+        Write-Host "$appFile successfully created in $timespend seconds"
+    } else {
+        Write-Error "App generation failed"
+    }
     $appFile
 }
 Export-ModuleMember -Function Compile-AppInNavContainer

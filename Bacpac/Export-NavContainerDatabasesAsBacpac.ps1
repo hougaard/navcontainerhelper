@@ -33,7 +33,12 @@ function Export-NavContainerDatabasesAsBacpac {
         [Parameter(Mandatory=$false)]
         [string]$bacpacFolder = "",
         [Parameter(Mandatory=$false)]
-        [string[]]$tenant = @("tenant")
+        [string[]]$tenant = @("tenant"),
+        [Parameter(Mandatory=$false)]
+        [int]$commandTimeout = 3600,
+        [switch]$diagnostics,
+        [Parameter(Mandatory=$false)]
+        [string[]]$additionalArguments = @()
     )
     
     $genericTag = Get-NavContainerGenericTag -containerOrImageName $containerName
@@ -50,20 +55,39 @@ function Export-NavContainerDatabasesAsBacpac {
     $containerBacpacFolder = Get-NavContainerPath -containerName $containerName -path $bacpacFolder -throw
 
     $session = Get-NavContainerSession -containerName $containerName -silent
-    Invoke-Command -Session $session -ScriptBlock { Param([System.Management.Automation.PSCredential]$sqlCredential, $bacpacFolder, $tenant)
+    Invoke-Command -Session $session -ScriptBlock { Param([System.Management.Automation.PSCredential]$sqlCredential, $bacpacFolder, $tenant, $commandTimeout, $diagnostics, $additionalArguments)
     
+        function InstallPrerequisite {
+            Param(
+                [Parameter(Mandatory=$true)]
+                [string]$Name,
+                [Parameter(Mandatory=$true)]
+                [string]$MsiPath,
+                [Parameter(Mandatory=$true)]
+                [string]$MsiUrl
+            )
+        
+            if (!(Test-Path $MsiPath)) {
+                Write-Host "Downloading $Name"
+                $MsiFolder = [System.IO.Path]::GetDirectoryName($MsiPath)
+                if (!(Test-Path $MsiFolder)) {
+                    New-Item -Path $MsiFolder -ItemType Directory | Out-Null
+                }
+                [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+                (New-Object System.Net.WebClient).DownloadFile($MsiUrl, $MsiPath)
+            }
+            Write-Host "Installing $Name"
+            start-process $MsiPath -ArgumentList "/quiet /qn /passive" -Wait
+        }
+
         function Install-DACFx
         {
-            $DacFxMsi = Join-Path $env:TEMP "DacFramework.msi"
-            $sqlpakcageExe = "C:\Program Files\Microsoft SQL Server\140\DAC\bin\sqlpackage.exe"
-            if (!(Test-Path $sqlpakcageExe -PathType Leaf)) {
-                Write-Host "Downloading DacFx 17.3 GA"
-                (New-Object System.Net.WebClient).DownloadFile("https://download.microsoft.com/download/3/7/F/37F3C5CE-E96B-41AC-B361-27735365AA16/EN/x64/DacFramework.msi",$DacFxMsi)
-                Write-Host "Installing DacFx 17.3 GA"
-                Start-process -FilePath $DacFxMsi -argumentList "/qn" -Wait
-                Remove-Item -Path $DacFxMsi
+            $sqlpakcageExe = Get-Item "C:\Program Files\Microsoft SQL Server\*\DAC\bin\sqlpackage.exe"
+            if (!($sqlpakcageExe)) {
+                InstallPrerequisite -Name "Dac Framework 18.0" -MsiPath "c:\download\DacFramework.msi" -MsiUrl "https://download.microsoft.com/download/9/9/5/995E5614-49F9-48F0-85A5-2215518B85BD/EN/x64/DacFramework.msi" | Out-Null
+                $sqlpakcageExe = Get-Item "C:\Program Files\Microsoft SQL Server\*\DAC\bin\sqlpackage.exe"
             }
-            $sqlpakcageExe 
+            $sqlpakcageExe.FullName
         }
         
         function Remove-NetworkServiceUser
@@ -85,6 +109,11 @@ function Export-NavContainerDatabasesAsBacpac {
             Invoke-Sqlcmd @params -Query "USE [$DatabaseName]
             IF EXISTS (SELECT 'X' FROM sysusers WHERE name = 'NT AUTHORITY\NETWORK SERVICE' and isntuser = 1)
               BEGIN DROP USER [NT AUTHORITY\NETWORK SERVICE] END"
+
+            Write-Host "Remove System User from $DatabaseName"
+            Invoke-Sqlcmd @params -Query "USE [$DatabaseName]
+            IF EXISTS (SELECT 'X' FROM sysusers WHERE name = 'NT AUTHORITY\SYSTEM' and isntuser = 1)
+              BEGIN DROP USER [NT AUTHORITY\SYSTEM] END"
         }
         
         function Remove-NavDatabaseSystemTableData
@@ -167,16 +196,27 @@ function Export-NavContainerDatabasesAsBacpac {
             [Parameter(Mandatory=$false)]
             [System.Management.Automation.PSCredential]$sqlCredential = $null,
             [Parameter(Mandatory=$true)]
-            [string]$targetFile
+            [string]$targetFile,
+            [Parameter(Mandatory=$false)]
+            [int]$commandTimeout = 3600,
+            [switch]$diagnostics,
+            [Parameter(Mandatory=$false)]
+            [string[]]$additionalArguments = @()
         )
         {
+            Write-Host "Exporting..."
             $arguments = @(
-                ('/Action:Export'), 
+                ('/Action:Export'),
                 ('/TargetFile:"'+$targetFile+'"'), 
                 ('/SourceDatabaseName:"'+$databaseName+'"'),
                 ('/SourceServerName:"'+$databaseServer+'"'),
                 ('/OverwriteFiles:True')
+                ("/p:CommandTimeout=$commandTimeout")
             )
+
+            if ($diagnostics) {
+                $arguments += @('/Diagnostics:True')
+            }
 
             if ($sqlCredential) {
                 $arguments += @(
@@ -185,26 +225,11 @@ function Export-NavContainerDatabasesAsBacpac {
                 )
             }
 
-            $pinfo = New-Object System.Diagnostics.ProcessStartInfo
-            $pinfo.FileName = $sqlPackageExe
-            $pinfo.RedirectStandardError = $true
-            $pinfo.RedirectStandardOutput = $true
-            $pinfo.UseShellExecute = $false
-            $pinfo.Arguments = $arguments
-            $p = New-Object System.Diagnostics.Process
-            $p.StartInfo = $pinfo
-            $p.Start() | Out-Null
+            if ($additionalArguments) {
+                $arguments += $additionalArguments
+            }
 
-            while (!$p.HasExited){
-                $line = $p.StandardOutput.ReadLine()
-                Write-Host $line
-            }
-            $line = $p.StandardOutput.ReadToEnd()
-            Write-Host $line
-            $err = $p.StandardError.ReadToEnd()
-            if ($err) {
-                Write-Error $err
-            }
+            & $sqlPackageExe $arguments
         }
 
         $customConfigFile = Join-Path (Get-Item "C:\Program Files\Microsoft Dynamics NAV\*\Service").FullName "CustomSettings.config"
@@ -226,14 +251,14 @@ function Export-NavContainerDatabasesAsBacpac {
             $appBacpacFileName = Join-Path $bacpacFolder "app.bacpac"
             Copy-NavDatabase -DatabaseServer $databaseServer -DatabaseInstance $databaseInstance -databaseCredentials $sqlCredential -SourceDatabaseName $DatabaseName -DestinationDatabaseName $tempAppDatabaseName
             Remove-NavDatabaseSystemTableData -DatabaseServer $databaseServerInstance -DatabaseName $tempAppDatabaseName -sqlCredential $sqlCredential
-            Do-Export -DatabaseServer $databaseServerInstance -DatabaseName $tempAppDatabaseName -sqlCredential $sqlCredential -targetFile $appBacpacFileName
+            Do-Export -DatabaseServer $databaseServerInstance -DatabaseName $tempAppDatabaseName -sqlCredential $sqlCredential -targetFile $appBacpacFileName -commandTimeout $commandTimeout -diagnostics:$diagnostics -additionalArguments $additionalArguments
             
             $tenant | ForEach-Object {
                 $tempTenantDatabaseName = "tempTenant"
                 $tenantBacpacFileName = Join-Path $bacpacFolder "$_.bacpac"
                 Copy-NavDatabase -DatabaseServer $databaseServer -DatabaseInstance $databaseInstance -databaseCredentials $sqlCredential -SourceDatabaseName $_ -DestinationDatabaseName $tempTenantDatabaseName
                 Remove-NavTenantDatabaseUserData -DatabaseServer $databaseServerInstance -DatabaseName $tempTenantDatabaseName -sqlCredential $sqlCredential
-                Do-Export -DatabaseServer $databaseServerInstance -DatabaseName $tempTenantDatabaseName -sqlCredential $sqlCredential -targetFile $tenantBacpacFileName
+                Do-Export -DatabaseServer $databaseServerInstance -DatabaseName $tempTenantDatabaseName -sqlCredential $sqlCredential -targetFile $tenantBacpacFileName -commandTimeout $commandTimeout -diagnostics:$diagnostics -additionalArguments $additionalArguments
             }
         } else {
             $tempDatabaseName = "temp$DatabaseName"
@@ -241,9 +266,9 @@ function Export-NavContainerDatabasesAsBacpac {
             Copy-NavDatabase -DatabaseServer $databaseServer -DatabaseInstance $databaseInstance -databaseCredentials $sqlCredential -SourceDatabaseName $DatabaseName -DestinationDatabaseName $tempDatabaseName
             Remove-NavDatabaseSystemTableData -DatabaseServer $databaseServerInstance -DatabaseName $tempDatabaseName -sqlCredential $sqlCredential
             Remove-NavTenantDatabaseUserData -DatabaseServer $databaseServerInstance -DatabaseName $tempDatabaseName -sqlCredential $sqlCredential
-            Do-Export -DatabaseServer $databaseServerInstance -DatabaseName $tempDatabaseName -sqlCredential $sqlCredential -targetFile $bacpacFileName
+            Do-Export -DatabaseServer $databaseServerInstance -DatabaseName $tempDatabaseName -sqlCredential $sqlCredential -targetFile $bacpacFileName -commandTimeout $commandTimeout -diagnostics:$diagnostics -additionalArguments $additionalArguments
         }
-    } -ArgumentList $sqlCredential, $containerBacpacFolder, $tenant
+    } -ArgumentList $sqlCredential, $containerBacpacFolder, $tenant, $commandTimeout, $diagnostics, $additionalArguments
 }
 Export-ModuleMember Export-NavContainerDatabasesAsBacpac
 

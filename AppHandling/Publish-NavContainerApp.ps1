@@ -1,4 +1,4 @@
-﻿<# 
+<# 
  .Synopsis
   Publish Nav App to a Nav container
  .Description
@@ -12,12 +12,16 @@
   Include this parameter if the app you want to publish is not signed
  .Parameter sync
   Include this parameter if you want to synchronize the app after publishing
+  .Parameter syncMode
+   Specify Add, Clean or Development based on how you want to synchronize the database schema. Default is Add
  .Parameter install
   Include this parameter if you want to install the app after publishing
  .Parameter tenant
   If you specify the install switch, then you can specify the tenant in which you want to install the app
  .Parameter packageType
-  Specify Extension or SymbolsOnly based on which package yu 
+  Specify Extension or SymbolsOnly based on which package you want to publish
+ .Parameter scope
+  Specify Global or Tenant based on how you want to publish the package. Default is Global
  .Example
   Publish-NavContainerApp -appFile c:\temp\myapp.app
  .Example
@@ -34,11 +38,17 @@ function Publish-NavContainerApp {
         [string]$appFile,
         [switch]$skipVerification,
         [switch]$sync,
+        [Parameter(Mandatory=$false)]
+        [ValidateSet('Add','Clean','Development')]
+        [string]$syncMode,
         [switch]$install,
         [Parameter(Mandatory=$false)]
         [string]$tenant = "default",
         [ValidateSet('Extension','SymbolsOnly')]
-        [string]$packageType = 'Extension'
+        [string]$packageType = 'Extension',
+        [Parameter(Mandatory=$false)]
+        [ValidateSet('Global','Tenant')]
+        [string]$scope
     )
 
     $copied = $false
@@ -53,8 +63,8 @@ function Publish-NavContainerApp {
         }
     }
 
-    $session = Get-NavContainerSession -containerName $containerName
-    Invoke-Command -Session $session -ScriptBlock { Param($appFile, $skipVerification, $copied, $sync, $install, $tenant, $packageType)
+    $session = Get-NavContainerSession -containerName $containerName -silent
+    Invoke-Command -Session $session -ScriptBlock { Param($appFile, $skipVerification, $copied, $sync, $install, $tenant, $packageType, $scope, $syncMode)
 
         if ($appFile.ToLower().StartsWith("http://") -or $appFile.ToLower().StartsWith("https://")) {
             $appUrl = $appFile
@@ -63,27 +73,42 @@ function Publish-NavContainerApp {
             $copied = $true
         }
 
+        $publishArgs = @{ "packageType" = $packageType }
+        if ($scope) {
+            $publishArgs += @{ "Scope" = $scope }
+            if ($scope -eq "Tenant") {
+                $publishArgs += @{ "Tenant" = $tenant }
+            }
+        }
+
         Write-Host "Publishing $appFile"
-        Publish-NavApp -ServerInstance NAV -Path $appFile -SkipVerification:$SkipVerification -packageType $packageType
+        Publish-NavApp -ServerInstance NAV -Path $appFile -SkipVerification:$SkipVerification @publishArgs
+
         if ($sync -or $install) {
             $appName = (Get-NAVAppInfo -Path $appFile).Name
+            $appVersion = (Get-NAVAppInfo -Path $appFile).Version
     
+            $syncArgs = @{}
+            if ($syncMode) {
+                $syncArgs += @{ "Mode" = $syncMode }
+            }
+
             if ($sync) {
                 Write-Host "Synchronizing $appName on tenant $tenant"
                 Sync-NavTenant -ServerInstance NAV -Tenant $tenant -Force
-                Sync-NavApp -ServerInstance NAV -Name $appName -Tenant $tenant -WarningAction Ignore
+                Sync-NavApp -ServerInstance NAV -Name $appName -Version $appVersion -Tenant $tenant @syncArgs -force -WarningAction Ignore
             }
     
             if ($install) {
                 Write-Host "Installing $appName on tenant $tenant"
-                Install-NavApp -ServerInstance NAV -Name $appName -Tenant $tenant
+                Install-NavApp -ServerInstance NAV -Name $appName -Version $appVersion -Tenant $tenant
             }
         }
 
         if ($copied) { 
             Remove-Item $appFile -Force
         }
-    } -ArgumentList $containerAppFile, $skipVerification, $copied, $sync, $install, $tenant, $packageType
+    } -ArgumentList $containerAppFile, $skipVerification, $copied, $sync, $install, $tenant, $packageType, $scope, $syncMode
     Write-Host -ForegroundColor Green "App successfully published"
 }
 Export-ModuleMember -Function Publish-NavContainerApp

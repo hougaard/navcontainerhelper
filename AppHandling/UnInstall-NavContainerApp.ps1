@@ -7,8 +7,14 @@
   Name of the container in which you want to uninstall the app (default navserver)
  .Parameter appName
   Name of app you want to uninstall in the container
+ .Parameter appVersion
+  Version of app you want to uninstall in the container
+ .Parameter doNotSaveData
+  Include this flag to indicate that you do not wish to save data when uninstalling the app
  .Example
   Uninstall-NavContainerApp -containerName test2 -appName myapp
+ .Example
+  Uninstall-NavContainerApp -containerName test2 -appName myapp -doNotSaveData
 #>
 function UnInstall-NavContainerApp {
     Param(
@@ -17,14 +23,30 @@ function UnInstall-NavContainerApp {
         [Parameter(Mandatory=$false)]
         [string]$tenant = "default",
         [Parameter(Mandatory=$true)]
-        [string]$appName
+        [string]$appName,
+        [Parameter()]
+        [string]$appVersion,
+        [switch]$doNotSaveData
     )
 
-    $session = Get-NavContainerSession -containerName $containerName
-    Invoke-Command -Session $session -ScriptBlock { Param($appName, $tenant)
+    $session = Get-NavContainerSession -containerName $containerName -silent
+    Invoke-Command -Session $session -ScriptBlock { Param($appName, $appVersion, $tenant)
         Write-Host "Uninstalling $appName from $tenant"
-        Uninstall-NavApp -ServerInstance NAV -Name $appName -tenant $tenant
-    } -ArgumentList $appName, $tenant
+        $parameters = @{
+            "ServerInstance" = "NAV";
+            "Name" = $appName;
+            "Tenant" = $tenant
+        }
+        if ($appVersion)
+        {
+            $parameters += @{ "Version" = $appVersion }
+        }
+        if ($doNotSaveData)
+        {
+            $parameters += @{ "DoNotSaveData" = $true }
+        }
+        Uninstall-NavApp @parameters
+    } -ArgumentList $appName, $appVersion, $tenant
     Write-Host -ForegroundColor Green "App successfully uninstalled"
 }
 Export-ModuleMember -Function UnInstall-NavContainerApp
